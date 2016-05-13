@@ -8,7 +8,38 @@
  * http://www.eclipse.org/legal/epl-v10.html
  *
  *******************************************************************************/
+int gateway_main(int argc, char **argv);
 
+#ifdef ARDUINO
+#warning BUILDING FOR ARDUINO
+#include <stdio.h>
+#include <stdint.h>
+#include <SPI.h>
+void perror(const char *s) {
+  printf("ERROR: %s\n", s);
+}
+
+static FILE uartout = {0};
+static int uart_putchar(char c, FILE *stream) {
+  Serial.write(c);
+  return 0;
+}
+
+void setup() {
+  Serial.begin(9600);
+  Serial.println("Hello");
+  fdev_setup_stream(&uartout, uart_putchar, NULL, _FDEV_SETUP_WRITE);
+  stdout=&uartout;
+
+  printf("testing\n");
+  SPI.begin();
+  gateway_main();
+}
+
+void loop() {}
+
+
+#else
 #include <string>
 #include <stdio.h>
 #include <sys/types.h>
@@ -19,6 +50,7 @@
 #include <cstdlib>
 #include <sys/time.h>
 #include <cstring>
+#include <stdlib.h>
 
 #include <sys/ioctl.h>
 #include <net/if.h>
@@ -27,8 +59,12 @@ using namespace std;
 
 #include "base64.h"
 
+#ifdef RASPBERRY_PI
 #include <wiringPi.h>
 #include <wiringPiSPI.h>
+#endif
+
+#endif  //!ARDUINO
 
 typedef bool boolean;
 typedef unsigned char byte;
@@ -44,9 +80,11 @@ bool sx1272 = true;
 
 byte receivedbytes;
 
+#ifndef ARDUINO
 struct sockaddr_in si_other;
 int s, slen=sizeof(si_other);
 struct ifreq ifr;
+#endif
 
 uint32_t cp_nb_rx_rcv;
 uint32_t cp_nb_rx_ok;
@@ -62,30 +100,46 @@ enum sf_t { SF7=7, SF8, SF9, SF10, SF11, SF12 };
  *
  *******************************************************************************/
 
+#ifdef RASPBERRY_PI
 // SX1272 - Raspberry connections
 int ssPin = 6;
 int dio0  = 7;
 int RST   = 0;
+#elif defined(ARDUINO)
+int ssPin = 10;
+int dio0  = 2;
+int RST   = 3;
+
+#endif
 
 // Set spreading factor (SF7 - SF12)
 sf_t sf = SF7;
 
 // Set center frequency
-uint32_t  freq = 868100000; // in Mhz! (868.1)
+uint32_t  freq = 902300000;//915000000; //868100000; // in Mhz! (868.1)
 
 // Set location
-float lat=0.0;
-float lon=0.0;
-int   alt=0;
+float lat=40.7128;
+float lon=-74.0059;
+int   alt=10;
 
 /* Informal status fields */
 static char platform[24]    = "Single Channel Gateway";  /* platform definition */
-static char email[40]       = "";                        /* used for contact email */
-static char description[64] = "";                        /* used for free form description */
+static char email[40]       = "nycttntest@gmail.com";    /* used for contact email */
+static char description[64] = "Test Gateway for node dev";  /* used for free form description */
 
 // define servers
 // TODO: use host names and dns
-#define SERVER1 "54.72.145.119"    // The Things Network: croft.thethings.girovito.nl
+
+/*
+
+  Update server to current (US) staging
+
+  router.us.thethings.network	canonical name = staging.thethings.network.
+  Name:	staging.thethings.network
+  Address: 40.114.249.243
+*/
+#define SERVER1 "40.114.249.243"
 //#define SERVER2 "192.168.1.10"      // local
 #define PORT 1700                   // The port on which to send data
 
@@ -168,6 +222,7 @@ void die(const char *s)
   exit(1);
 }
 
+#if defined(ARDUINO) || defined(RASPBERRY_PI)
 void selectreceiver()
 {
   digitalWrite(ssPin, LOW);
@@ -177,6 +232,14 @@ void unselectreceiver()
 {
   digitalWrite(ssPin, HIGH);
 }
+
+#ifdef ARDUINO
+void wiringPiSPIDataRW(int ignored, unsigned char *buf, int count) {
+  int i;
+  for (i=0; i<count; i++)
+    buf[i] = SPI.transfer(buf[i]);
+}
+#endif
 
 byte readRegister(byte addr)
 {
@@ -211,7 +274,7 @@ boolean receivePkt(char *payload)
   writeRegister(REG_IRQ_FLAGS, 0x40);
 
   int irqflags = readRegister(REG_IRQ_FLAGS);
-
+  printf("irqflags = %d\n", irqflags);
   cp_nb_rx_rcv++;
 
   //  payload crc: 0x20
@@ -227,7 +290,7 @@ boolean receivePkt(char *payload)
     byte currentAddr = readRegister(REG_FIFO_RX_CURRENT_ADDR);
     byte receivedCount = readRegister(REG_RX_NB_BYTES);
     receivedbytes = receivedCount;
-
+    printf("receivePkt byes=%d\n", receivedbytes);
     writeRegister(REG_FIFO_ADDR_PTR, currentAddr);
 
     for(int i = 0; i < receivedCount; i++)
@@ -312,7 +375,14 @@ void SetupLoRa()
   writeRegister(REG_OPMODE, SX72_MODE_RX_CONTINUOS);
 
 }
+#else
+void SetupLoRa() {
+  printf("SetupLoRa() : nothing to do\n");
+}
+#endif
 
+
+#ifndef ARDUINO
 void sendudp(char *msg, int length) {
 
   //send the update
@@ -322,6 +392,7 @@ void sendudp(char *msg, int length) {
     {
       die("sendto()");
     }
+  else printf("sent to %s\n", SERVER1);
 #endif
 
 #ifdef SERVER2
@@ -375,7 +446,9 @@ void sendstat() {
   sendudp(status_report, stat_index);
 
 }
+#endif
 
+#if defined(ARDUINO) || defined(RASPBERRY_PI)
 void receivepacket() {
 
   long int SNR;
@@ -404,12 +477,57 @@ void receivepacket() {
 	}
 
 	printf("Packet RSSI: %d, ",readRegister(0x1A)-rssicorr);
-	printf("RSSI: %d, ",readRegister(0x1B)-rssicorr);
+	printf("RSSI: %d %d, ",readRegister(0x1B)-rssicorr, readRegister(0x1A)-rssicorr);
 	printf("SNR: %li, ",SNR);
 	printf("Length: %i",(int)receivedbytes);
 	printf("\n");
 
+#ifdef ARDUINO
 	int j;
+	printf("PAYLOAD:");
+	for (j=0; j < receivedbytes; j++)
+	  printf(" %02x", ((uint8_t *)message)[j]);
+	printf("\n");
+
+	printf("ASCII:");
+	for (j=0; j < receivedbytes; j++) {
+	  uint8_t c = ((uint8_t *)message)[j];
+	  if ((c >= ' ') && (c <= 'z')) printf("%c", c);
+	  else printf(".");
+	}
+	printf("\n");
+#endif
+      }
+    }
+}
+#else
+FILE *receiver;
+char linebuf[256];
+void receivepacket() {
+  do {
+    linebuf[0] = 0;
+    fgets((char *)linebuf, 256, receiver);
+    printf("%s", linebuf);
+    receivedbytes = 0;
+    if (!strncmp(linebuf, "PAYLOAD: ", 9)) {
+      printf("parsing payload\n");
+      char *p;
+      for (p = linebuf+9; *p; p+=3) {
+	//	  printf("bytes %d ptr %u\n", p-linebuf);
+	message[receivedbytes++] = strtol(p, NULL, 16);
+      }
+      printf("got %d bytes\n", receivedbytes);
+    }
+  } while(!receivedbytes);
+}
+#endif
+
+#ifndef ARDUINO
+void process_packet() {
+  long int SNR;
+  int rssicorr;
+  if (receivedbytes > 0) {
+        int j;
 	j = bin_to_b64((uint8_t *)message, receivedbytes, (char *)(b64), 341);
 	//fwrite(b64, sizeof(char), j, stdout);
 
@@ -500,7 +618,13 @@ void receivepacket() {
 	buff_index += 13;
 	j = snprintf((char *)(buff_up + buff_index), TX_BUFF_SIZE-buff_index, ",\"lsnr\":%li", SNR);
 	buff_index += j;
-	j = snprintf((char *)(buff_up + buff_index), TX_BUFF_SIZE-buff_index, ",\"rssi\":%d,\"size\":%u", readRegister(0x1A)-rssicorr, receivedbytes);
+#if defined(ARDUINO) || defined(RASPBERRY_PI)
+	int rssi_1a = readRegister(0x1A)-rssicorr;
+#else
+	int rssi_1a = -80;
+#endif
+	j = snprintf((char *)(buff_up + buff_index), TX_BUFF_SIZE-buff_index, ",\"rssi\":%d,\"size\":%u", 
+		     rssi_1a, receivedbytes);
 	buff_index += j;
 	memcpy((void *)(buff_up + buff_index), (void *)",\"data\":\"", 9);
 	buff_index += 9;
@@ -524,29 +648,37 @@ void receivepacket() {
 	//send the messages
 	sendudp(buff_up, buff_index);
 
+
 	fflush(stdout);
-
-      } // received a message
-
-    } // dio0=1
+  } // received a message
 }
+#endif
 
-int main () {
+int gateway_main () {
 
+#ifndef ARDUINO
   struct timeval nowtime;
   uint32_t lasttime;
-
+#endif
+#ifdef RASPBERRY_PI
   wiringPiSetup () ;
+#endif
+#if defined(ARDUINO) || defined(RASPBERRY_PI)
   pinMode(ssPin, OUTPUT);
   pinMode(dio0, INPUT);
   pinMode(RST, OUTPUT);
-
+#else
+#define delay(x) {}//usleep(1000 * x);
+#endif
+#ifdef RASPBERRY_PI
   //int fd = 
   wiringPiSPISetup(CHANNEL, 500000);
   //cout << "Init result: " << fd << endl;
+#endif
 
   SetupLoRa();
 
+#ifndef ARDUINO
   if ( (s=socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) == -1)
     {
       die("socket");
@@ -567,14 +699,19 @@ int main () {
 	 (unsigned char)ifr.ifr_hwaddr.sa_data[3],
 	 (unsigned char)ifr.ifr_hwaddr.sa_data[4],
 	 (unsigned char)ifr.ifr_hwaddr.sa_data[5]);
-
+#endif
+#ifdef ARDUINO
+  printf("Listening at SF%i on %lu Hz.\n", sf,freq);
+#else
   printf("Listening at SF%i on %.6lf Mhz.\n", sf,(double)freq/1000000);
+#endif  
   printf("------------------\n");
 
   while(1) {
 
     receivepacket();
-
+#ifndef ARDUINO
+    process_packet();
     gettimeofday(&nowtime, NULL);
     uint32_t nowseconds = (uint32_t)(nowtime.tv_sec);
     if (nowseconds - lasttime >= 30) {
@@ -584,6 +721,7 @@ int main () {
       cp_nb_rx_ok = 0;
       cp_up_pkt_fwd = 0;
     }
+#endif
     delay(1);
   }
 
@@ -591,3 +729,56 @@ int main () {
 
 }
 
+
+#ifndef ARDUINO
+#ifndef RASPBERRY_PI
+#include <termios.h>
+#include <unistd.h>
+#include <fcntl.h>
+int comport = -1;
+int serial_open(const char *device, int baudcode, const int mode) {
+  printf("trying to open %s\n", device);
+  struct termios comport_termios;
+  comport = -1; 
+  comport = open(device, mode | O_NOCTTY | O_NONBLOCK);//O_RDWR);
+  printf("open returned %u\n", comport);
+  if (comport == -1) printf("failure opening %s!!\r\n", device);
+  else printf("********* Opened %s\r\n", device);
+  
+  tcgetattr(comport, &comport_termios);
+  comport_termios.c_lflag &= ~(ECHO|ECHONL|ICANON|IEXTEN);
+  comport_termios.c_lflag |= ICANON;
+  comport_termios.c_oflag &= ~(OPOST|OCRNL|ONLCR);
+  comport_termios.c_iflag &= ~(ICRNL|INLCR);
+  comport_termios.c_cc[VTIME] = 0;
+  comport_termios.c_cc[VMIN] = 0;
+  //#define COMPORTBAUD B115200
+  // printf("using baud %d\n", baud);
+  //  int baudcode = baudlookup(baud);
+  //  if (baudcode < 0) printf("cannot determine the meaning of baud %d\n", baud);
+  cfsetospeed(&comport_termios, baudcode);
+  cfsetispeed(&comport_termios, baudcode);
+  tcsetattr(comport, TCSADRAIN, &comport_termios);
+
+
+  fcntl(comport, F_SETFL, O_RDWR);
+  printf("set comport back to blocking\n");
+  return comport;
+}
+
+int serial_close (int fd) {
+  return close(fd);
+}
+#endif
+
+
+int main(int argc, char **argv) {
+  printf("hello\n");
+#ifndef RASPBERRY_PI
+  serial_open((argc > 1) ? argv[1] : "/dev/ttyUSB0", B9600, O_RDWR);
+  receiver = fdopen(comport, "rb");
+#endif
+  gateway_main();
+}
+
+#endif
