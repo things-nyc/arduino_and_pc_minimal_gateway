@@ -1,3 +1,13 @@
+This is a quick fork of Thomas Telkamp's single channel gateway, modified to use an Arduino hosting an RFM95 as a radio delegate, dumping packets over the USB-serial to a (linux) PC which runs the rest of the forwarder code.
+
+Some things like RSSI etc end up faked/missing
+
+It has been changes for US 902.3 MHz frequency, and NYC details put in
+
+Currently both the Arduino code and the PC code build out of the same source file with lots of ugly ifdefs (sorry, it seemed like a good idea at the time).  That means the Arduino .ino is actually symlink, which works, only if you try to save any edits from the Arduion IDE it will overwrite the symlink with a regular file.
+
+This was a quick and dirty test to get packets pushed into TTN without having to setup a raspberry pi.
+
 Single Channel LoRaWAN Gateway
 ==============================
 This repository contains a proof-of-concept implementation of a single
