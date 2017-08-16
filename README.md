@@ -1,3 +1,6 @@
+**NOT MAINTAINED**
+==============
+
 This is a quick fork of Thomas Telkamp's single channel gateway, modified to use an Arduino hosting an RFM95 as a radio delegate, dumping packets over the USB-serial to a (linux) PC which runs the rest of the forwarder code.
 
 Some things like RSSI etc end up faked/missing
